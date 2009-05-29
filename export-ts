@@ -1,0 +1,361 @@
+#!/usr/bin/perl -w
+#
+# Movable Type (r) (C) 2001-2008 Six Apart, Ltd. All Rights Reserved.
+# This code cannot be redistributed without permission from www.sixapart.com.
+# For more information, consult your Movable Type license.
+#
+# Author: Byrne Reese <byrne at majordojo dot com>
+# Docs: Beau Smith <beau at beausmith dot com>
+#
+# $Id: export-ts 1533 2009-05-22 20:19:09Z bsmith $
+
+package MT::Tool::ExportTemplateSet;
+use strict;
+use warnings;
+
+use lib qw( lib extlib );
+use base qw( MT::Tool );
+
+sub usage {
+    return qq{--blog=<blog_id> --name=<TS name> [--version=<TS version>]
+        [--id=<TS ID>] [--key=<TS key>] [--static=<dir>] [--out=<dir>]};
+}
+
+sub help {
+    return qq{
+        export-ts - A tool to export a blog's templates as a template set
+
+        --blog      The Blog ID to export templates from. (required)
+
+        --id        The ID of the resulting template set.
+
+        --name      The name to be used for the creation of the resulting
+                    plugin. This is also used to determine the output
+                    directory for related files.
+
+        --version   The version string to be used for the creation of
+                    the resulting plugin.
+
+        --static    The path to the directory containing your mt-static
+                    files for this template set. It must be a relative 
+                    path from your mt-static folder.
+
+        --key       The MT::PluginData key of the resulting template set.
+
+        --out       The path to a directory in which you wish to output
+                    the template set's files. (default: current directory)
+
+        --verbose   Show verbose messages.
+};
+}
+
+my ( $BLOG_ID, $TS_NAME, $TS_ID, $TS_KEY, $TS_VERSION, $VERBOSE, $BASE_DIR, $STATIC, $OUT_DIR );
+$TS_NAME    = 'My Template Set';
+$TS_VERSION = '1.01';
+$OUT_DIR = ".";
+
+sub options {
+    return (
+        'blog=i'    => \$BLOG_ID,
+        'name=s'    => \$TS_NAME,
+        'static=s'  => \$STATIC,
+        'id=s'      => \$TS_ID,
+        'key=s'     => \$TS_KEY,
+        'out=s'     => \$OUT_DIR,
+        'version=s' => \$TS_VERSION,
+    );
+}
+
+use MT::Template;
+use MT::TemplateMap;
+use YAML::Tiny;
+use File::Spec;
+use File::Path;
+use MT::Util qw( dirify );
+use MT;
+use File::Copy::Recursive qw(dircopy);
+
+sub main {
+    my $class = shift;
+    $VERBOSE = $class->SUPER::main(@_);
+    $class->show_usage(), exit if !$BLOG_ID || !$TS_NAME;
+
+    $TS_ID  ||= dirify($TS_NAME);
+    $TS_KEY ||= $TS_ID;
+    $STATIC ||= File::Spec->catdir( 'plugins', $TS_ID );
+
+    $BASE_DIR = $TS_ID . "-" . $TS_VERSION;
+    mkpath( File::Spec->catdir( $OUT_DIR, $BASE_DIR, 'plugins', $TS_ID, 'templates' ) );
+
+    my $mt = MT->new() or die MT->errstr;
+    my $from = File::Spec->catdir( _static_file_path($mt) , $STATIC );
+    if (-e $from) { 
+    my $to   = File::Spec->catdir( $OUT_DIR, $BASE_DIR, 'mt-static', $STATIC );
+    debug( 'Copying static files from ' . $from . ' to ' . $to );
+    mkpath( $to );
+    dircopy( $from, $to );
+    }
+
+    debug( 'Exporting templates from blog #' . $BLOG_ID );
+    my @tmpls;
+    my $yaml = YAML::Tiny->new;
+    $yaml->[0] = {
+        name          => $TS_NAME,
+        id            => $TS_ID,
+        key           => $TS_KEY,
+        description   => 'A Movable Type Template Set.',
+        template_sets => {
+            $TS_ID => {
+                label     => $TS_NAME,
+                base_path  => 'templates',
+            }
+        }
+    };
+    my $ts = $yaml->[0]->{template_sets}->{$TS_ID};
+
+    # Index Templates
+    @tmpls = MT::Template->load(
+        {
+            blog_id => $BLOG_ID,
+            type    => 'index',
+        }
+    );
+    for my $t (@tmpls) {
+    my $id = $t->identifier;
+    $id ||= dirify($t->name);
+        debug( '  - Creating index template: ' . $t->name . " ($id)");
+        $ts->{templates}->{index}->{ $id } = {
+            label      => $t->name,
+            outfile    => $t->outfile,
+            rebuild_me => $t->rebuild_me,
+        };
+        write_tmpl($t);
+    }
+
+    # Template Modules
+    @tmpls = MT::Template->load(
+        {
+            blog_id => $BLOG_ID,
+            type    => 'custom',
+        }
+    );
+    for my $t (@tmpls) {
+    my $id = $t->identifier;
+    $id ||= dirify($t->name);
+        debug( '  - Creating template module: ' . $t->name . " ($id)");
+        $ts->{templates}->{module}->{ $id } = { label => $t->name, };
+        write_tmpl($t);
+    }
+
+    # Widgets
+    @tmpls = MT::Template->load(
+        {
+            blog_id => $BLOG_ID,
+            type    => 'widget',
+        }
+    );
+    for my $t (@tmpls) {
+    my $id = $t->identifier;
+    $id ||= dirify($t->name);
+        debug( '  - Creating widget: ' . $t->name . " ($id)" );
+        $ts->{templates}->{widget}->{ $id } = { label => $t->name, };
+        write_tmpl($t);
+    }
+
+    # Widget Sets
+    @tmpls = MT::Template->load(
+        {
+            blog_id => $BLOG_ID,
+            type    => 'widgetset',
+        }
+    );
+    for my $t (@tmpls) {
+    my $id = dirify($t->name);
+        debug( '  - Creating widget set: ' . $t->name . " ($id)");
+    my $raw = $t->text;
+    my @widgets = ($raw =~ /widget=\"([^\"]*)\"/g);
+        $ts->{templates}->{widgetset}->{ $id } = { order => 1000,
+                           label => $t->name,
+                           widgets => \@widgets,
+    };
+    }
+
+
+
+    # System Templates
+    @tmpls = MT::Template->load(
+        [
+            { blog_id   => $BLOG_ID, type => 'popup_image' }     => -or =>
+              { blog_id => $BLOG_ID, type => 'dynamic_error' }   => -or =>
+              { blog_id => $BLOG_ID, type => 'search_results' }  => -or =>
+              { blog_id => $BLOG_ID, type => 'entry_response' } => -or =>
+              { blog_id => $BLOG_ID, type => 'comment_preview' } => -or =>
+              { blog_id => $BLOG_ID, type => 'comment_response' }
+        ]
+    );
+    for my $t (@tmpls) {
+    my $id = $t->type;
+        debug( '  - Creating system template: ' . $t->name . " ($id)");
+        $ts->{templates}->{system}->{ $id } = { label => $t->name, };
+        write_tmpl($t);
+    }
+
+    # Archive
+    @tmpls = MT::Template->load(
+        [
+     { blog_id => $BLOG_ID, type => 'archive' } => -or =>
+     { blog_id => $BLOG_ID, type => 'page' } => -or =>
+     { blog_id => $BLOG_ID, type => 'individual' }
+        ]
+    );
+    for my $t (@tmpls) {
+    my $id = $t->identifier;
+    $id ||= dirify($t->name);
+        $ts->{templates}->{ $t->type }->{ $id }->{label} = $t->name;
+        my @maps = MT::TemplateMap->load( { template_id => $t->id, } );
+        for my $map (@maps) {
+            my $type = lc( $map->archive_type );
+            $type =~ s/ /-/g;
+            debug( '  - Creating template map: ' . $type );
+            $ts->{templates}->{ $t->type }->{ $id }->{mappings}
+              ->{$type} = {
+                archive_type => $map->archive_type,
+                preferred    => $map->is_preferred,
+                $map->file_template
+                  && $map->file_template ne '~'
+                  && $map->file_template ne ''
+                ? ( file_template => $map->file_template )
+                : (),
+              };
+        }
+        write_tmpl($t);
+    }
+
+    debug('  - Writing config.yaml file');
+    $yaml->write(
+        File::Spec->catfile( $OUT_DIR, $BASE_DIR, 'plugins', $TS_ID, 'config.yaml' ) );
+
+}
+
+sub write_tmpl {
+    my ($tmpl) = @_;
+    my $id = $tmpl->identifier;
+    $id ||= dirify($tmpl->name);
+    my $fn = File::Spec->catfile( $OUT_DIR, $BASE_DIR, 'plugins', $TS_ID, 
+                  'templates', $id . '.mtml' );
+    debug("  - Writing template: $id.mtml");
+    open FILE, ">$fn";
+    print FILE $tmpl->text;
+    close FILE;
+}
+
+sub debug {
+    print $_[0] . "\n" if $VERBOSE;
+}
+
+sub _static_file_path {
+    my ($ctx) = @_;
+    my $cfg = $ctx->{cfg};
+    my $path = $cfg->StaticFilePath;
+    if (!$path) {
+        $path = $ctx->{mt_dir};
+        $path .= '/' unless $path =~ m!/$!;
+        $path .= 'mt-static/';
+    }
+    $path .= '/' unless $path =~ m!/$!;
+    return $path;
+}
+
+__PACKAGE__->main() unless caller;
+
+1;
+__END__
+
+=head1 NAME
+
+export-ts - A tool to export a blog's templates as a template set
+
+=head1 SYNOPSIS
+
+    > cd /path/to/cgi-bin/mt
+    > perl ./tools/export-ts -blog=1 -id="MyTemplateSet"
+
+=head1 INSTALLATION
+
+Place this script inside your Movable Type tools directory:
+
+    /PATH/TO/MT/tools/
+
+=head1 DESCRIPTION
+
+I<export-ts> is a tool to export a blog's templates to a
+template set (a plugin) that can be installed elsewhere.
+
+=head1 OPTIONS
+
+The following options are available:
+
+=over 4
+
+=item --blog (required)
+
+The Blog ID to export templates from
+
+=item --id
+
+The ID to be used for the creation of the resulting plugin. This is also
+used to determine the output directory for related files.
+
+=item --name
+
+The name to be used for the creation of the resulting plugin. This is also
+used to determine the output directory for related files.
+
+=item --version
+
+The version string to be used for the creation of the resulting plugin.
+
+=item --static
+
+The path to the directory containing your mt-static files for this template
+set. It must be a relative path from your mt-static folder.
+
+=item --key
+
+The MT::PluginData key of the resulting template set.
+
+=item --out
+
+The path to a directory in which you wish to output the template set's files. (default: current directory)
+
+=item --verbose
+
+Show verbose messages.
+
+=back
+
+=head1 USAGE
+
+From the command line, one would type:
+
+    > cd /path/to/cgi-bin/mt
+    > chmod a+x tools/export-ts
+    > perl ./tools/export-ts --blog=1 --id=MySet --name="My Template Set" --version=3 --out="template-sets"
+
+This would result in the following directories being created:
+
+    /path/to/cgi-bin/mt/template-sets/
+        MySet-3/
+            plugins/
+                MySet/
+                    config.yaml
+                    templates/*
+            mt-static/
+                plugins/
+                    MySet/*
+
+You should then be able to zip up the MySet directory or simply install as you would install any other plugin.
+
+Once installed you can use the "refresh blog templates" action in the sidebar of the the Manage Templates screen (Design > Templates). Once templates are refreshed, rebuild the blog.
+
+=cut
