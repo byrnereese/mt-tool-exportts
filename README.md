@@ -1,60 +1,79 @@
-## NAME
+# EXPORT-TS
 
-export-ts - A tool to export a blog's templates as a template set
+A tool to export a blog's templates as a template set.
 
-## SYNOPSIS
+Basic Usage:
 
-    > cd /path/to/cgi-bin/mt
-    > perl ./tools/export-ts -blog=1 -id="MyTemplateSet"
+    cd /PATH/TO/MT/
+    perl ./tools/export-ts --blog=1 --id="MyTemplateSet"
 
-## INSTALLATION
+## Requirements
 
-Place this script inside your Movable Type tools directory:
+* MT4.x
+
+## Description
+
+`export-ts` is a tool to export a blog's templates to a template set (a plugin) that can be installed elsewhere.
+
+
+## Installation
+
+1. Place this script inside your Movable Type tools directory:
 
     /PATH/TO/MT/tools/
 
-## DESCRIPTION
+2. Update file permissions to 775
 
-export-ts is a tool to export a blog's templates to a template set (a plugin) that can be installed elsewhere.
+    chmod 775 /PATH/TO/MT/tools/export-ts
 
-## OPTIONS
+
+## Options
 
 The following options are available:
 
---blog (required)
-The Blog ID to export templates from
+### blog
 
---id
+(required) The Blog ID to export templates from
+
+### id
+
 The ID to be used for the creation of the resulting plugin. This is also used to determine the output directory for related files.
 
---name
+### name
+
 The name to be used for the creation of the resulting plugin. This is also used to determine the output directory for related files.
 
---version
+### version
+
 The version string to be used for the creation of the resulting plugin.
 
---static
+### static
+
 The path to the directory containing your mt-static files for this template set. It must be a relative path from your mt-static folder.
 
---key
+### key
+
 The MT::PluginData key of the resulting template set.
 
---out
+### out
+
 The path to a directory in which you wish to output the template set's files. (default: current directory)
 
---verbose
+### verbose
+
 Show verbose messages.
 
-## USAGE
+## Usage
 
 From the command line, one would type:
 
-    > cd /path/to/cgi-bin/mt
-    > chmod a+x tools/export-ts
-    > perl ./tools/export-ts --blog=1 --id=MySet --name="My Template Set" --version=3 --out="template-sets"
+    cd /PATH/TO/MT/
+    chmod a+x tools/export-ts
+    perl ./tools/export-ts --blog=1 --id=MySet --name="My Template Set" --version=3 --out="template-sets"
+
 This would result in the following directories being created:
 
-    /path/to/cgi-bin/mt/template-sets/
+    /PATH/TO/MT/template-sets/
         MySet-3/
             plugins/
                 MySet/
