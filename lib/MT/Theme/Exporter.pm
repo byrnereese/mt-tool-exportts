@@ -145,11 +145,10 @@ properly.
 sub _process_export_queue {
     my $self = shift;
     my %seen;
+    return unless $self->{'export_queue'};
     foreach my $inc (sort { $a->{id} <=> $b->{id} } @{ $self->{'export_queue'} }) {
         # FIXME: this should be de-duped much earlier in the process
         unless ( $seen{ $inc->{id} } ) {
-            print "Processing " . $inc->{name} . " (".$inc->{id}.") off of export queue.\n";
-
             # FIXME: this is hard coded to global templates based upon the assumption that
             #        only global templates will be automatically included
             # my $cfg = $self->_process_templates( $inc->{'blog_id'}, 'global', {
@@ -373,6 +372,11 @@ sub _debug {
     $self->{'logger'}( $_[0] . "\n") if $self->{'verbose'} || $self->{'dryrun'};
 }
 
+sub _error {
+    my $self = shift;
+    $self->{'logger'}( $_[0] . "\n");
+}
+
 sub _static_file_path {
     my ($ctx) = @_;
     my $cfg = $ctx->{cfg};
@@ -392,16 +396,16 @@ sub _write_tmpl {
     die "No template object passed to write_tmpl" unless $tmpl;
     
     unless ($basename) {
-        print STDERR sprintf
+        $self->_error( sprintf
             'No template basename for template "%s". Skipping...',
-            $tmpl->name;
+            $tmpl->name );
         return;
     }
     
-    if ( $self->{'created'}{"$type/$basename"} ) {
-        print STDERR sprintf
+    if ( $self->{'created'}{"$ts_id/$type/$basename"} ) {
+        $self->_error( sprintf
             'Template basename "%s" previously used for template "%s".'
-            .' Skipping...', "$type/$basename", $tmpl->name;
+            .' Skipping...', "$ts_id/$type/$basename", $tmpl->name);
         return;
     }
     
@@ -422,7 +426,7 @@ sub _write_tmpl {
         print FILE $tmpl->text;
         close FILE;        
     }
-    $self->{'created'}{"$type/$basename"} = $tmpl->name;
+    $self->{'created'}{"$ts_id/$type/$basename"} = $tmpl->name;
 }
 
 sub _find_includes {

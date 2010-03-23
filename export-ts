@@ -17,7 +17,7 @@ use lib qw( lib extlib );
 use base qw( MT::Tool );
 
 sub usage {
-    return qq{--blog=<blog_id> --name=<TS name> [--version=<TS version>]
+    return qq{--blog=<blog_ids> --name=<TS name> [--version=<TS version>]
         [--id=<TS ID>] [--key=<TS key>] [--static=<dir>]};
 }
 
@@ -25,15 +25,15 @@ sub help {
     return qq{
         export-ts - A tool to export a blog's templates as a template set
 
-        --blog      The Blog ID of a specific blog to export templates
+        --blog      A list of blog IDs (separated by a comma) to export templates
                     from. (optional)
 
         --name      The name to be used for the creation of the resulting
-                    plugin. This is also used to determine the output
+                    theme. This is also used to determine the output
                     directory for related files.
 
         --version   The version string to be used for the creation of
-                    the resulting plugin. (optional)
+                    the resulting theme. (optional)
 
         --static    The path to the directory containing your mt-static
                     files for this template set. It must be a relative 
@@ -44,17 +44,21 @@ sub help {
         --key       The key of the resulting template set. (optional)
 
         --verbose   Show verbose messages.
+
+        --dryrun    Show what the system would do, but don't actually do 
+                    anything.
 };
 }
 
-my ( $BLOG_ID,      $TS_NAME, $TS_ID,       $TS_KEY,    $DRYRUN,
-     $TS_VERSION,   $VERBOSE, $BASE_DIR,    $STATIC,    %blog_id, $fmgr);
+my ( $BLOG_IDS,     $TS_NAME, $TS_ID,       $TS_KEY,    $DRYRUN,
+     $TS_VERSION,   $VERBOSE, $BASE_DIR,    $STATIC,    %seen );
+
 $TS_NAME    = 'My Template Set';
 $TS_VERSION = '1.0';
 
 sub options {
     return (
-        'blog=i'    => \$BLOG_ID,
+        'blog=s'    => \$BLOG_IDS,
         'name=s'    => \$TS_NAME,
         'static=s'  => \$STATIC,
         'id=s'      => \$TS_ID,
@@ -70,46 +74,70 @@ use MT::Theme::Exporter;
 sub main {
     my $class = shift;
     $VERBOSE = $class->SUPER::main(@_);
-    $class->show_usage() && exit if (! defined $BLOG_ID) || !$TS_NAME;
-
-    my $blog;
-    my %options;
-    if ($BLOG_ID) {
-        $blog = MT->model('blog')->load( $BLOG_ID );
-        $options{'pack_name'} = $blog->name . ' Theme Pack';
-    }
-
-    my $id     = $TS_ID;
-    my $key    = $TS_KEY;
-    my $name   = $TS_NAME;
-    my $static = $STATIC;
-    
-    $id     ||= MT::Util::dirify($TS_NAME);
-    $key    ||= MT::Util::dirify($TS_NAME);
-    $static ||= File::Spec->catdir( 'plugins', $TS_KEY );
-
-    my $exporter = MT::Theme::Exporter->new({
-        %options,
-        logger       => sub { print STDERR $_[0] },
-        key          => $TS_KEY, 
-        pack_version => $TS_VERSION,
-        verbose      => $VERBOSE,
-        dryrun       => $DRYRUN
-    });
-
-    # Shorthand convenience variable
-    %blog_id = (blog_id => $BLOG_ID);
 
     # No use doing a dry run if we can't see what's happening
     $VERBOSE = $DRYRUN if $DRYRUN;
     
-    $exporter->export({
-        blog_id => $BLOG_ID,
-        name    => $name,
-        static  => $static,
-    });
+    $class->show_usage() && exit if (! defined $BLOG_IDS) || !$TS_NAME;
 
+    my $blog;
+    my (%pack_opts, %export_opts);
+    $pack_opts{'pack_name'} = 'My Theme Pack';
+
+    my $id     = $TS_ID;
+    my $key    = $TS_KEY;
+    my $name   = $TS_NAME;
+    
+    $id     ||= MT::Util::dirify($TS_NAME);
+    $key    ||= MT::Util::dirify($TS_NAME);
+
+    my @blog_ids = split(',',$BLOG_IDS);
+    if ($#blog_ids == 0 && !$name) {
+        $blog = MT->model('blog')->load( $blog_ids[0] );
+        $pack_opts{'pack_name'} = $blog->name . ' Theme Pack';
+        if ($STATIC) {
+            $export_opts{'static'} = $STATIC;
+        } else {
+            $export_opts{'static'} = File::Spec->catdir( 'plugins', $TS_KEY );
+        }
+    }
+
+    my $exporter = MT::Theme::Exporter->new({
+        logger       => sub { print STDERR $_[0] },
+        key          => $TS_KEY, 
+        pack_version => $TS_VERSION,
+        verbose      => $VERBOSE,
+        dryrun       => $DRYRUN,
+        %pack_opts
+    });
+    foreach my $blog_id (@blog_ids) {
+        $blog = MT->model('blog')->load( MT::Util::trim($blog_id) );
+        my $id = _generate_unique_id( $blog->name );
+        $exporter->export({
+            blog_id => $blog_id,
+            name    => $blog->name . " Theme",
+            id      => $id,
+            key     => $id,
+            %export_opts
+        });
+    }
     $exporter->write();
+}
+
+sub _generate_unique_id {
+    my ($str) = @_;
+    my $name = MT::Util::dirify( $str );
+    if ( defined $seen{ $name } ) {
+        if ($name =~ s/_(\d+)$//) {
+            $name = $name . ($1 + 1);
+            return _generate_unique_id( $name );
+        } else {
+            return _generate_unique_id( $name . "_1" );
+        }
+    } else {
+        $seen{ $name } = 1;
+        return $name;
+    }
 }
 
 __PACKAGE__->main() unless caller;
