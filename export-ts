@@ -1,13 +1,13 @@
 #!/usr/bin/perl -w
 #
 # Movable Type (r) (C) 2001-2008 Six Apart, Ltd. All Rights Reserved.
-# This code cannot be redistributed without permission from www.sixapart.com.
-# For more information, consult your Movable Type license.
+# (C) 2009-2010 Endevver, LLC. All Rights Reserved.
+#
+# This software is licensed under the GPLv2.
 #
 # Author:       Byrne Reese <byrne at majordojo dot com>
 # Changes by:   Jay Allen <jay at endevver dot com>
 #
-# $Id$
 package MT::Tool::ExportTemplateSet;
 use strict;
 use warnings;
@@ -50,7 +50,7 @@ sub help {
 my ( $BLOG_ID,      $TS_NAME, $TS_ID,       $TS_KEY,    $DRYRUN,
      $TS_VERSION,   $VERBOSE, $BASE_DIR,    $STATIC,    %blog_id, $fmgr);
 $TS_NAME    = 'My Template Set';
-$TS_VERSION = '1.01';
+$TS_VERSION = '1.0';
 
 sub options {
     return (
@@ -64,106 +64,38 @@ sub options {
     );
 }
 
-use MT::Template;
-use MT::TemplateMap;
-use YAML::Tiny;
-use File::Spec;
-use File::Path;
-use MT::Util qw( dirify );
-use MT;
-use File::Copy::Recursive qw(dircopy);
-use File::Basename qw( basename dirname );
-use MT::FileMgr;
-
-sub template_group {
-    my $key = shift;
-    
-    my %template_groups = (
-        #
-        # Blog-level templates
-        #
-        blog   => [
-            {
-                type      => 'index',
-                load_args => {  %blog_id, type => 'index'  },
-                config    => sub { { outfile    => $_[0]->outfile,
-                                     rebuild_me => $_[0]->rebuild_me } },
-            },    
-            {
-                type      => 'archive',
-                config    => \&templatemap_config,
-                load_args => [
-                         { %blog_id, type => 'archive' }     => -or =>
-                         { %blog_id, type => 'individual' }  => -or =>
-                         { %blog_id, type => 'page' },
-                 ],
-            },
-            {
-                type      => 'system',
-                basename  => sub { $_[0]->type },
-                load_args => [
-                    { %blog_id, type => 'popup_image' }      => -or =>
-                    { %blog_id, type => 'dynamic_error' }    => -or =>
-                    { %blog_id, type => 'search_results' }   => -or =>
-                    { %blog_id, type => 'comment_preview' }  => -or =>
-                    { %blog_id, type => 'comment_response' }
-                ],
-            }
-        ],
-        #
-        # Global shared templates
-        #
-        global => [
-            {
-                type      => 'system',
-                basename  => sub { $_[0]->type },
-                load_args => [
-                    { %blog_id, type => 'login_form' }          => -or =>
-                    { %blog_id, type => 'profile_view' }        => -or =>
-                    { %blog_id, type => 'profile_feed' }        => -or =>
-                    { %blog_id, type => 'register_form' }       => -or =>
-                    { %blog_id, type => 'profile_error' }       => -or =>
-                    { %blog_id, type => 'profile_edit_form' }   => -or =>
-                    { %blog_id, type => 'password_reset_form' } => -or =>
-                    { %blog_id, type => 'register_confirmation' }
-                ],
-            },
-            {
-                type      => 'email',
-                load_args => { %blog_id, type => 'email' },
-            },
-        ],
-        #
-        # Templates found in both the global shared and blog sets
-        #
-        all    => [
-            {
-                type      => 'module',
-                load_args => { %blog_id, type => 'custom' },
-            },
-            {
-                type      => 'widget',
-                load_args => {  %blog_id, type => 'widget' },
-            },
-            {
-                type      => 'widgetset',
-                load_args => { %blog_id, type => 'widgetset' },
-            },    
-        ],
-    );
-
-    return \%template_groups unless defined $key;
-    
-    die sprintf('Unknown template group "%s"', $key)
-        unless exists $template_groups{$key};
-
-    return $template_groups{$key};
-}
+use lib './lib';
+use MT::Theme::Exporter;
 
 sub main {
     my $class = shift;
     $VERBOSE = $class->SUPER::main(@_);
     $class->show_usage() && exit if (! defined $BLOG_ID) || !$TS_NAME;
+
+    my $blog;
+    my %options;
+    if ($BLOG_ID) {
+        $blog = MT->model('blog')->load( $BLOG_ID );
+        $options{'pack_name'} = $blog->name . ' Theme Pack';
+    }
+
+    my $id     = $TS_ID;
+    my $key    = $TS_KEY;
+    my $name   = $TS_NAME;
+    my $static = $STATIC;
+    
+    $id     ||= MT::Util::dirify($TS_NAME);
+    $key    ||= MT::Util::dirify($TS_NAME);
+    $static ||= File::Spec->catdir( 'plugins', $TS_KEY );
+
+    my $exporter = MT::Theme::Exporter->new({
+        %options,
+        logger       => sub { print STDERR $_[0] },
+        key          => $TS_KEY, 
+        pack_version => $TS_VERSION,
+        verbose      => $VERBOSE,
+        dryrun       => $DRYRUN
+    });
 
     # Shorthand convenience variable
     %blog_id = (blog_id => $BLOG_ID);
@@ -171,238 +103,13 @@ sub main {
     # No use doing a dry run if we can't see what's happening
     $VERBOSE = $DRYRUN if $DRYRUN;
     
-    $TS_ID  ||= dirify($TS_NAME);
-    $TS_KEY ||= dirify($TS_NAME);
-    $STATIC ||= File::Spec->catdir( 'plugins', $TS_KEY );
+    $exporter->export({
+        blog_id => $BLOG_ID,
+        name    => $name,
+        static  => $static,
+    });
 
-    $BASE_DIR = $TS_KEY . "-" . $TS_VERSION;
-
-    my $templates_path
-        = File::Spec->catdir( $BASE_DIR, 'plugins', $TS_KEY, 'templates' );
-
-    $fmgr = MT::FileMgr->new('Local');
-    $fmgr->exists($templates_path) or $fmgr->mkpath($templates_path)
-        or die sprintf("Could not make path %s: %s\n",
-            $templates_path, $fmgr->errstr);
-
-    my $mt = MT->new() or die MT->errstr;
-    my $from = File::Spec->catdir( _static_file_path($mt) , $STATIC );
-    if (-e $from) { 
-        my $to   = File::Spec->catdir( $BASE_DIR, 'mt-static', $STATIC );
-        debug( 'Copying static files from ' . $from . ' to ' . $to );
-        $fmgr->mkpath( $to );
-        dircopy( $from, $to );
-    }
-
-    debug( 'Exporting templates from blog #' . $BLOG_ID );
-
-    # What tye of export are we running?
-    # Blog-level or global templates?
-    my $set_type = $BLOG_ID ? 'blog' : 'global';
-
-    # Process the set_type templates as well as those which
-    # can be found as either global or blog-level templates
-    process_templates($_)
-        foreach map { @{ template_group($_) } } ( $set_type, 'all' );
-
-    tmplset_create(File::Spec->catfile(
-            $BASE_DIR, 'plugins', $TS_KEY, 'config.yaml' ));
-}
-
-
-sub process_templates {
-    my $args = shift || {};
-    if (!$args->{load_args}) {
-        require Data::Dumper;
-        croak 'process_templates call with no load_args argument: '
-             . Data::Dumper::Dumper($args);
-    }
-    require MT::Template;
-    my $iter = MT::Template->load_iter($args->{load_args});
-
-    while (my $t = $iter->()) {
-        # use Data::Dumper;
-        # debug(Dumper($t));
-        debug( sprintf '  - Creating %s: %s',
-            $args->{type}, $t->name );
-
-        my $basename ||= $t->identifier || create_basename($t->name);
-
-        # Resolve the basename in case its a code ref
-        if ($basename and 'CODE' eq ref($basename)) {
-            $basename = $basename->($t);
-        }
-        else {
-            # If a basename is not provided, create it using the
-            # identifier or the template name
-            $basename ||= $t->identifier || create_basename($t->name);
-        }
-        
-        # Trim the basename to 50 characters
-        $basename = substr($basename, 0, 50);
-
-        # Write the template text out to a file within the plugin envelope
-        if ( write_tmpl( $t, $args->{type}, $basename )) {
-
-            # Using the template in context, compile the YAML config
-            my $cfg = { label => $t->name,
-                        filename => File::Spec->catfile($args->{type},
-                                                        $basename.'.mtml') };
-
-            # The "config" attribute can be either a code or hash reference
-            if ( 'CODE' eq ref($args->{config}) ) {
-                $cfg = { %$cfg,  %{ $args->{config}->($t) } };
-            }
-            elsif ( 'HASH' eq ref($args->{config}) ) {
-                $cfg = { %$cfg,  %{ $args->{config} } };                
-            }
-
-            # Store the config for the template
-            tmplset_config({    basename => $basename,
-                                type     => $args->{type},
-                                data     => $cfg 
-                        });
-        }
-    }
-}
-
-{
-    my ($ts, $yaml);
-    sub tmplset_config {
-        my $cfg = shift;
-
-        # Initialize YAML if it hasn't been already
-        unless ($yaml) {
-            $yaml = YAML::Tiny->new;
-            $yaml->[0] = {
-                name          => $TS_NAME,
-                id            => $TS_ID,
-                key           => $TS_KEY,
-                description   => 'A Movable Type Template Set.',
-                template_sets => {
-                    $TS_ID => {
-                        label     => $TS_NAME,
-                        base_path  => 'templates',
-                    }
-                }
-            };                
-
-            # Create a shortcut to our template set node
-            $ts = $yaml->[0]->{template_sets}->{ $TS_ID };
-        }
-
-        # If we haven't be provided a config hash to store,
-        # then they must want the whole thing back
-        return $yaml unless defined $cfg;
-
-        # Store the provided configuration data in the node
-        # corresponding to the template's type and basename.
-        $ts->{templates}->{ $cfg->{type} }->{ $cfg->{basename} }
-            = $cfg->{data};
-    }
-
-    sub tmplset_create {
-        my $filepath = shift;
-        debug("  - Writing config.yaml file $filepath");
-        unless (is_dryrun()) {
-            $yaml->write($filepath) or die $yaml->errstr;            
-        }
-    }
-}
-
-sub templatemap_config {
-    my $t = shift;
-
-    my $mappings;
-    my @maps = MT::TemplateMap->load( { template_id => $t->id, } );
-    for my $map (@maps) {
-        my $type = lc( $map->archive_type );
-        $type =~ s/ /-/g;
-        debug( '  - Creating template map: ' . $type );
-        $mappings->{$type} = {
-                    archive_type => $map->archive_type,
-                    preferred    => $map->is_preferred,
-                    $map->file_template
-                    && $map->file_template ne '~'
-                    && $map->file_template ne ''
-                        ? ( file_template => $map->file_template )
-                        : (),
-          };
-    }
-
-    return  { mappings => $mappings };
-}
-
-sub create_basename {
-    my $name = shift;
-    require MT::Util;
-    my $id = MT::Util::dirify($name)
-        or die sprintf 'Could not create basename for template "%s"', $name;
-    $id;
-}
-
-{
-    my %created;
-    sub write_tmpl {
-        my ($tmpl, $type, $basename) = @_;
-        die "No template object passed to write_tmpl" unless $tmpl;
-
-        unless ($basename) {
-            print STDERR sprintf
-                'No template basename for template "%s". Skipping...',
-                 $tmpl->name;
-            return;
-        }
-
-        if ( $created{"$type/$basename"} ) {
-            print STDERR sprintf
-                'Template basename "%s" previously used for template "%s".'
-                .' Skipping...', "$type/$basename", $tmpl->name;
-            return;
-        }
-
-        my $fn = File::Spec->catfile(   $BASE_DIR, 
-                                        'plugins',
-                                        $TS_KEY,
-                                        'templates',
-                                        $type,
-                                        $basename . '.mtml' );
-        debug( "\t-- Writing template text file out to $fn" );
-        unless (is_dryrun()) {            
-            $fmgr ||= MT::FileMgr->new('Local');
-            $fmgr->exists(dirname($fn)) or $fmgr->mkpath(dirname($fn))
-                or die sprintf("Could not make path %s: %s\n",
-                    dirname($fn), $fmgr->errstr);
-
-            open FILE, ">$fn" or die "Could not open $fn for writing: $!\n";
-            print FILE $tmpl->text;
-            close FILE;        
-        }
-        $created{"$type/$basename"} = $tmpl->name;
-    }
-}
-
-sub is_dryrun {
-    return 0 unless $DRYRUN;
-    debug("\t-- Previous action blocked for dry-run test");
-    1;
-}
-
-sub debug {
-    print $_[0] . "\n" if $VERBOSE || $DRYRUN;
-}
-
-sub _static_file_path {
-    my ($ctx) = @_;
-    my $cfg = $ctx->{cfg};
-    my $path = $cfg->StaticFilePath;
-    if (!$path) {
-        $path = $ctx->{mt_dir};
-        $path .= '/' unless $path =~ m!/$!;
-        $path .= 'mt-static/';
-    }
-    $path .= '/' unless $path =~ m!/$!;
-    return $path;
+    $exporter->write();
 }
 
 __PACKAGE__->main() unless caller;
